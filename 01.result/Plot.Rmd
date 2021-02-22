@@ -1,0 +1,467 @@
+---
+title: "plot_v2"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("/userdatanode3/data_jinh/virome_dna_rna/02_dna_pipeline/12_plot_v2")
+
+#Load required files and packages
+library(ggplot2)
+library(reshape2)
+library(doBy)
+library(ggpubr)
+library(patchwork)
+library(ggplotify)
+library(corrplot)
+
+mp<-read.table("mapping_v2.txt", header = T, sep = "\t")
+
+######## Function 
+get_comb=function(grp){
+  comp=list()
+  a=combn(unique(grp), 2)
+  for (i in 1:ncol(a)) {comp[i]=list(as.character(a[,i]))}
+  comp
+}
+
+get_rank_factor=function(tb){
+  tb=tb[order(rowMeans(tb[,2:ncol(tb)]), decreasing = T), ]
+  level=data.frame(nm=tb[,1], means=rowMeans(tb[,2:ncol(tb)]))
+  level
+}
+
+#Function of plot data  (For PCoA)
+get_plot_data<-function(dist_data){
+  plot.list=list()
+  dist.pcoa=cmdscale(dist_data, eig=TRUE)
+  pc12=dist.pcoa$points[,1:2]
+  pc_importance=round(dist.pcoa$eig/sum(dist.pcoa$eig)*100,digits = 2)
+  pc12=as.data.frame(pc12) 
+  pc12[,3]=row.names(pc12)
+  x.label=paste("PCoA 1 (", pc_importance[1],digits=4,"%)", sep="")
+  y.label=paste("PCoA 2 (", pc_importance[2],digits=4,"%)", sep="")
+  plot.list$pc12<-pc12
+  plot.list$x.label<-x.label
+  plot.list$y.label<-y.label
+  return(plot.list)
+}
+
+get_adoins_out=function(xxdist, subsample, grp){
+  require(vegan)
+  require(reshape2)
+  xxdist=as.matrix(xxdist)
+  xxdist=xxdist[rownames(xxdist) %in% subsample, colnames(xxdist) %in% subsample]
+  mp=data.frame(sample=subsample, grp=grp)
+  sub_map=mp[mp$sample %in% rownames(xxdist_mat), ]
+  xx_name=data.frame(nm=rownames(xxdist_mat), rk=1:length(rownames(xxdist_mat)))
+  sub_map_rk=merge(sub_map,xx_name, by.y="nm", by.x="sample")
+  sub_map_rk=sub_map_rk[order(sub_map_rk$rk), ]
+  anosim(xxdist,sub_map_rk[,2],permutations = 999)
+}
+
+# scale_fill_brewer(palette = "Set3")+theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+```
+
+Family level tax
+```{r}
+library(doBy)
+ab=read.table("pileup.combined_reset_reads.matrix.rere.filtered", header = T, sep="\t", row.names = 1)
+ab[which(rowSums(ab)!=0),]
+
+#viral communities family level
+vt<-read.table("../11_plot/merged_table_virus_rep.out.filtered", sep = "\t", header = T)
+vt.family=subset(vt, family_rate>=0.33)
+t=strsplit(as.character(vt.family$taxonomy), ';')
+t=unlist(t)
+family.name=t[grep("F_", t)]
+family.name=gsub("F_","",family.name )
+vt.family=data.frame(Scaffold=vt.family$Scaffold, family=family.name)
+
+ab$Scaffold=row.names(ab)
+ab_family=merge(vt.family, ab, by="Scaffold", all.y = T)
+ab_family$family[is.na(ab_family$family)]="unclass"
+
+ab_family_sum=summaryBy(list(colnames(ab_family)[3:ncol(ab_family)], "family"), data=ab_family, FUN=sum)
+colnames(ab_family_sum) = gsub(".sum", "", colnames(ab_family_sum))
+```
+
+Figure X1 (mapping ratio)
+```{r}
+mpped_ratio=read.table("reads.mapped.f", sep = "\t")
+mpped_ratio=merge(mpped_ratio, mp, by.x="V1", by.y="samples")
+
+#### Figure X1 mapped ratio
+X1.comp=get_comb(mpped_ratio$From_Adult_or_child)
+
+X1=ggplot(mpped_ratio, aes(x= From_Adult_or_child, y=V2, fill=From_Adult_or_child))+geom_boxplot()+scale_fill_brewer(palette = "Set3")+theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())+stat_compare_means(comparisons = X1.comp)
+
+X1.raw=ggplot(mpped_ratio, aes(x= From_Adult_or_child, y=V2, fill=From_Adult_or_child))+geom_boxplot()+scale_fill_brewer(palette = "Set3")+theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+ggsave(X1, file="Figure_X1.pdf", width = 5, height = 5)
+ggsave(X1.raw, file="Figure_X1_raw.pdf", width = 5, height = 5)
+```
+
+Figure X2 (virus size and depth)
+```{r}
+load("Depth_and_size.Rdata")
+
+length_vs_depth=ggplot(dp.plot.new.f, aes(x=length, y=depth, group=cir, color=new_family, shape=cir, size=cir, fill=new_family))+geom_point()+scale_x_log10()+scale_y_log10()+scale_color_brewer(palette = "Set3")+scale_fill_brewer(palette = "Set3")+scale_shape_manual(values = c(21,22))+scale_size_manual(values = c(3,1))+theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+length_vs_depth.m=ggMarginal(length_vs_depth)
+
+write.table(dp.plot.new.f, file = "Figure_X2_table_Virus_scaffold_depth_and_size.txt", sep = "\t", row.names = F, col.names = T, quote = F)
+ggsave(length_vs_depth.m, file="Figure_X2_length_vs_depth.pdf", width = 7, height = 5)
+```
+
+Figure X3 (Alpha diversity) shannon, ace, chao1, richness curve.
+```{r}
+shannon=read.table("alpha_diversity/shannon_index.txt", sep = "\t", header=T)
+ace=read.table("alpha_diversity/ace_index.txt", sep = "\t", header = T)
+chao1=read.table("alpha_diversity/chao1_index.txt", sep = "\t", header = T)
+simpson=read.table("alpha_diversity/simpson_index.txt", sep = "\t", header = T)
+
+#merge function
+mgdt=function(dt, map, lb){
+  mgdt=merge(dt, mp, by.x="sample", by.y = "samples")
+  X1.comp=get_comb(mgdt$From_Adult_or_child)
+  pt=ggplot(mgdt, aes(x= From_Adult_or_child, y=alpha_index,  fill=From_Adult_or_child))+geom_boxplot()+scale_fill_brewer(palette = "Set3")+theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())+stat_compare_means(comparisons = X1.comp) + labs(y= lb)
+  pt
+}
+# Plot 
+shannon.pt=mgdt(shannon, mp, "Shannon index")
+ace.pt=mgdt(ace, mp, 'Ace_index')
+chao1.pt=mgdt(chao1, mp, 'Chao1 index')
+Simpson=mgdt(simpson, mp, 'Simpson')
+
+alpha_pt=shannon.pt+ace.pt+chao1.pt
+ggsave(alpha_pt, file="Figure_X3_alpha_index.pdf", width = 16, height = 5)
+```
+
+Figure X4 richness curve 
+```{r}
+rich=read.table("richness_curve.txt", sep = "\t")
+rich.mp=merge(rich, mp, by.x="V3", by.y="samples")
+rich.sum=summaryBy(list("V2", c("V1", "From_Adult_or_child")), data=rich.mp, FUN=c(mean, sd))
+
+
+ggplot(rich.sum, aes(x=V1, y=V2.mean, color=From_Adult_or_child))+
+  geom_line()+ geom_point()+
+  geom_errorbar(aes(ymin=V2.mean-V2.sd, ymax=V2.mean+V2.sd))
+```
+
+Figure X4 species accumulation curve
+```{r}
+rare_tb=read.table("pileup.combined_reset_reads.matrix.rere.filtered", header = T, row.names = 1)
+rare_tb=t(rare_tb)
+mp.s=mp[,c(1,5)]
+
+# Function get richcurve plot data
+China_adult=rare_tb[rownames(rare_tb) %in% subset(mp, From_Adult_or_child=="China_adult")[,1],]
+Pakistan_adult=rare_tb[rownames(rare_tb) %in% subset(mp, From_Adult_or_child=="Pakistan_adult")[,1],]
+China_child=rare_tb[rownames(rare_tb) %in% subset(mp, From_Adult_or_child=="China_child")[,1],]
+Pakistan_child=rare_tb[rownames(rare_tb) %in% subset(mp, From_Adult_or_child=="Pakistan_child")[,1],]
+
+
+# Function get richcurve plot data
+get_plot_data=function(dd, nm=nm){
+  dd.curve=specaccum(dd, method = "random")
+  dd.curve.data=data.frame(Sites=dd.curve$sites, Richness=dd.curve$richness, SD=dd.curve$sd)
+  dd.curve.data$label=rep(nm, nrow(dd.curve.data))
+  dd.curve.data
+}
+
+Pakistan_adult.data=get_plot_data(Pakistan_adult, nm="Pakistan_adult")
+China_adult.data=get_plot_data(China_adult, nm="China_adult")
+China_child.data=get_plot_data(China_child, nm="China_child")
+Pakistan_child.data=get_plot_data(Pakistan_child, nm="Pakistan_child")
+
+rich.all=rbind(Pakistan_adult.data, China_adult.data, China_child.data, Pakistan_child.data)
+
+rich.plot=ggplot(rich.all, aes(x=Sites, y=Richness, color=label))+ geom_line() + geom_errorbar(aes(ymax = Richness + SD, ymin = Richness - SD), width = 0.25)+scale_color_brewer(palette = "Set3")+theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+ggsave(rich.plot, file="Figure_X4_species_curve.pdf", width = 5, height = 3)
+
+#boxplot(Pakistan_adult.curve, col = 3)
+#boxplot(China_chied.cvrve, add = T, col = 5)
+#boxplot(Pakistan_child.curve, add = T, col = 6)
+#boxplot(China_child.cvrve, add = T, col = 7)
+
+```
+
+Figure X5 tax barplot
+```{r}
+load("../11_plot/DNA_virome_tax_plot.RData")
+### pie plot unknow virus
+ggsave(plot.pie1, file="Figure_X5.1_unknow_virus_pie_plot.pdf")
+ggsave(plot.pie2, file="Figure_X5.2_unknow_virus_pie_plot.pdf")
+
+ggsave(box.1, file="Figure_X5.3_unkonw_virus_boxplot.pdf")
+
+ggsave(p.id, file="Figure_X5.4_virus_tax_barplot_with_unknow.pdf", width = 6, height = 3)
+
+
+#new plot 
+lv_bar=get_rank_factor(family_ab)
+new_row=''
+for (i in 1:nrow(lv_bar)){
+  if (i<=11){
+    new_row[i]=as.character(lv_bar$nm[i])
+  }else{
+    new_row[i]="Other"
+    }
+  i=i+1
+}
+lv_bar$new_row=new_row
+
+family_ab.mt_bar=merge(family_ab.mt,lv_bar, by.x='family', by.y='nm' )
+family_ab.mt_bar_rmunclass=subset(family_ab.mt_bar, new_row!='unclass')
+
+p.fill2=ggplot(family_ab.mt_bar_rmunclass, aes(variable, value, fill=new_row))+geom_bar(stat="identity", width=1, position = 'fill')+facet_grid(~From_Adult_or_child, scales="free_x",space="free_x")+theme_bw()+theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())+scale_fill_brewer(palette="Set3")
+
+ggsave(p.fill2, file="Figure_X5.5_virus_tax_barplot_without_unknow.pdf", width = 6, height = 3)
+```
+
+Figure X6 beta diversity 
+```{r}
+###### Bray dist
+dt=read.table("pileup.combined_reset_reads.matrix.rere.filtered", header = T, sep="\t", row.names = 1)
+dt[which(rowSums(dt)!=0),]
+dt_bray=vegdist(t(dt), method = "bray")
+dt_bray_pc<-get_plot_data(dt_bray)
+dt_bray_pc_plot<-merge(dt_bray_pc$pc12, mp, by.x="V3", by.y="samples")
+
+######### dist
+dist_mat=as.matrix(dt_bray)
+dist_mat_mt=melt(dist_mat)
+dist_mat_mt_mp=merge(dist_mat_mt, mp, by.x="Var1", by.y="samples")
+dist_mat_mt_mp=merge(dist_mat_mt_mp, mp, by.x="Var2", by.y="samples")
+
+dist_mat_mt_mp$combine=paste(dist_mat_mt_mp$From_Adult_or_child.x, dist_mat_mt_mp$From_Adult_or_child.y, sep="_vs_")
+dist_inter_intra=summaryBy(value~combine, data=dist_mat_mt_mp, FUN=c(mean,sd))
+
+str_list=strsplit(dist_inter_intra$combine, split = "_vs_")
+name_a=""
+name_b=""
+for (i in 1:length(str_list)){
+  name_a[i]=unlist(str_list[i])[1]
+  name_b[i]=unlist(str_list[i])[2]
+}
+
+dist_inter_intra$name_a=name_a
+dist_inter_intra$name_b=name_b
+dist_mat.matrix=dcast(name_a~name_b, data= dist_inter_intra, value.var = "value.mean")
+rownames(dist_mat.matrix)=dist_mat.matrix$name_a
+dist_mat.matrix=dist_mat.matrix[, -1]
+#corrplot(as.matrix(dist_mat.matrix))
+corrplot(as.matrix(dist_mat.matrix), type = "upper", addCoef.col = "black", is.corr=F, cl.lim = c(0.4, 1))
+
+
+########## Plot bray PCoA
+dt_bray_pc_plot_ggplot=ggplot(dt_bray_pc_plot, aes(x=V1,y=V2,colour=From_Adult_or_child)) + geom_point(alpha=0.6, size=2) + labs(x=dt_bray_pc_plot$x.label, y=dt_bray_pc_plot$y.label, title="Bray curtis PCoA")+scale_color_brewer(palette="Dark2")+theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+dt_bray_pc_plot_ggplot_ellipse=ggscatter(dt_bray_pc_plot, x = "V1", y = "V2",
+          color = "From_Adult_or_child", palette = "npg",
+          ellipse = TRUE, ellipse.type="confidence",ellipse.level = 0.95,
+          mean.point = F, star.plot = TRUE) + labs(x=dt_bray_pc$x.label, y=dt_bray_pc$y.label, title="Bray curtis PCoA")
+
+########## Plot bray MMDS
+dt_bray_nmds<-monoMDS(dt_bray)
+dat<-dt_bray_nmds$points
+dat<-transform(dat,samples=row.names(dat))
+mer_dat<-merge(dat,mp,by="samples")
+
+##### ANSIM
+get_adoins_out=function(xxdist, subsample, grp){
+  require(vegan)
+  require(reshape2)
+  xxdist=as.matrix(xxdist)
+  xxdist=xxdist[rownames(xxdist) %in% subsample, colnames(xxdist) %in% subsample]
+  mp=data.frame(sample=subsample, grp=grp)
+  sub_map=mp[mp$sample %in% rownames(xxdist), ]
+  xx_name=data.frame(nm=rownames(xxdist), rk=1:length(rownames(xxdist)))
+  sub_map_rk=merge(sub_map,xx_name, by.y="nm", by.x="sample")
+  sub_map_rk=sub_map_rk[order(sub_map_rk$rk), ]
+  anosim(xxdist,sub_map_rk[,2],permutations = 999)
+}
+
+
+
+adult=subset(mp, Adult_or_child  == "adult")
+child=subset(mp, Adult_or_child  == "child")
+get_adoins_out(dt_bray, adult$samples, adult$From)
+get_adoins_out(dt_bray, child$samples, child$From)
+
+
+
+nmds.plot=ggscatter(mer_dat, x = "MDS1", y = "MDS2",
+          color = "From_Adult_or_child", palette = "npg",
+          ellipse = TRUE, ellipse.type="confidence",ellipse.level = 0.95,
+          mean.point = F, star.plot = TRUE, 
+          ggtheme = theme_bw() ) + labs(title= paste("P-value=",an$signif,"\t","R=",round(an$statistic,2))) 
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Save plot
+ggsave(nmds.plot, file="Figure_X6_nmds_pcoa.pdf", width = 7, height = 5)
+
+
+######## viral communities family level
+famliy.dist.bray<-vegdist(t(ab_family_sum[2:ncol(ab_family_sum)]), method = "bray")
+famliy.dist.bray_nmds<-monoMDS(famliy.dist.bray)
+famliy.dist.bray.dat<-famliy.dist.bray_nmds$points
+famliy.dist.bray.dat<-transform(famliy.dist.bray.dat,samples=row.names(famliy.dist.bray.dat))
+famliy.dist.bray.mer_dat<-merge(famliy.dist.bray.dat,mp,by="samples")
+
+#~~~~~~~~~~~~~~~ anosim
+adult=subset(mp, Adult_or_child  == "adult")
+child=subset(mp, Adult_or_child  == "child")
+get_adoins_out(famliy.dist.bray, adult$samples, adult$From)
+get_adoins_out(famliy.dist.bray, child$samples, child$From)
+
+an_family<-anosim(famliy.dist.bray,mp$From,permutations = 999)
+
+family.nmds.plot=ggscatter(famliy.dist.bray.mer_dat, x = "MDS1", y = "MDS2",
+          color = "From_Adult_or_child", palette = "npg",
+          ellipse = TRUE, ellipse.type="confidence",ellipse.level = 0.95,
+          mean.point = F, star.plot = TRUE, 
+          ggtheme = theme_bw() ) + labs(title= paste("P-value=",an_family$signif,"\t","R=",round(an$statistic,2))) 
+
+ggsave(family.nmds.plot, file="Figure_X6.2_family_level.nmds_pcoa.pdf", width = 7, height = 5)
+
+```
+
+Figure X7 diff tax
+```{r}
+require(ggsci)
+require(patchwork)
+#diff family
+family_ab=ab_family_sum
+family_ab.mt=melt(family_ab)
+family_ab.mt=merge(family_ab.mt, mp, by.x = "variable", by.y="samples")
+family.compare=data.frame(compare_means(value~From_Adult_or_child,family_ab.mt, group.by="family"))
+
+#~~~~~~~~~~~~ get means of each family
+family_ab.mt_mean=summaryBy(list("value", c("family", "From_Adult_or_child")), data=family_ab.mt, FUN=mean)
+family_ab.mt_mean$grp_com=paste(family_ab.mt_mean$From_Adult_or_child, family_ab.mt_mean$family, sep = "_")
+
+family.compare=subset(family.compare, select = c('family', 'group1', 'group2', 'p'))
+family.compare$g1_com=paste(family.compare$group1, family.compare$family, sep = "_")
+family.compare$g2_com=paste(family.compare$group2, family.compare$family, sep = "_")
+family.compare_out=merge(family.compare, family_ab.mt_mean, by.x='g1_com', by.y='grp_com')
+family.compare_out=merge(family.compare_out, family_ab.mt_mean, by.x='g2_com', by.y='grp_com')
+
+family.compare_out=subset(family.compare_out, select = c('family.x', 'group1', 'group2', 'p','value.mean.x', 'value.mean.y'))
+
+#~~~~~~~~~~~~~~~~ Write diff tax result 
+write.table(family.compare_out, file="diff.tax", sep = "\t", quote = F, row.names = F)
+
+#~~~~~~~~~~~~~~ plot 
+get_diff_tax_by_group=function(mat, sample, mp){
+  mat=subset(mat, select=c('family', as.character(sample)))
+  mat=mat[rowSums(mat[,2:ncol(mat)])!=0,]
+  dada=mat
+  lv=get_rank_factor(mat)
+  mat=melt(mat)
+  mat=merge(mat,mp, by.x='variable', by.y='samples')
+  mat$family=factor(mat$family, levels = lv$nm)
+  mat
+}
+
+### China_adult vs Pakistan_adult
+adult_dif_bar = get_diff_tax_by_group(family_ab, adult_sample$samples, mp)
+sig_tax_adult=c('Adenoviridae','Lavidaviridae', 'Circoviridae', 'Marseilleviridae','Anelloviridae', 'Herpesviridae', 'Rudiviridae')
+adult_dif_bar=adult_dif_bar[adult_dif_bar$family %in% sig_tax_adult, ] 
+
+ca_pa=ggplot(adult_dif_bar, aes(x=family, y=value, fill=From_Adult_or_child))+geom_boxplot(width=1, position =  position_dodge2(width = 0.75, preserve = "single"))+facet_grid(.~family, scales = "free")  +scale_y_log10() + scale_fill_npg(alpha = 0.8) + theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())+labs(y='Counts of mapped reads', x='') 
+
+### China child vs Pakistan child
+child_dif_bar = get_diff_tax_by_group(family_ab, child$samples, mp)
+sig_tax_child = c('Adenoviridae','Inoviridae','Mimiviridae','Myoviridae','Herelleviridae', 'Phycodnaviridae')
+child_dif_bar=child_dif_bar[child_dif_bar$family %in% sig_tax_child, ] 
+
+cc_pc=ggplot(child_dif_bar, aes(x=family, y=value, fill=From_Adult_or_child))+geom_boxplot(width=1, position =  position_dodge2(width = 0.75, preserve = "single"))+facet_grid(.~family, scales = "free")  +scale_y_log10() + scale_fill_npg(alpha = 0.8) + theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())+labs(y='Counts of mapped reads', x='')
+
+dif_tax_com=ca_pa+cc_pc+plot_layout(nrow = 2)
+
+#### ^^^^^^^^^^^^^ save plot 
+ggsave(dif_tax_com, file="Figure_X7.1_diff_tax.pdf", width = 7, height = 4)
+#ggsave(cc_pc, file="Figure_X7.2_cc_pc.pdf", width = 5, height = 8)
+
+#get table
+mean_median=summaryBy(list("value", c("family", "From_Adult_or_child")),data=family_ab.mt, FUN = c(mean, median,sd))
+mean_median$labe=paste(mean_median$family,mean_median$From_Adult_or_child, sep = "_")
+write.table(mean_median, "DNA_family_means.txt", quote = F, sep = "\t", row.names = F, col.names = T)
+
+#ggbarplot(adult_dif_bar, x = "family", y = "value", color = "From_Adult_or_child", add = c("medium_se", "jitter"),add.params = list(size=0.05), position = position_dodge())+ coord_flip() +scale_y_log10()
+```
+
+get upset plot
+```{r}
+# 19_get_kegg_ko_to_01_matrix.py pileup.combined_reset_reads.matrix.rere.filtered > pileup.combined_reset_reads.01matrix.rere.filtered
+mt01=read.table("pileup.combined_reset_reads.01matrix.rere.filtered", header = T, row.names = 1, sep = "\t")
+mt01=as.data.frame(t(mt01))
+mt01$samples=rownames(mt01)
+mt01=merge(mt01, mp, by="samples")
+mt01.m=melt(mt01)
+mt01.s=summaryBy(list("value", c("From_Adult_or_child", "variable")), data=mt01.m, FUN=max)
+
+mt01.matrix=dcast(mt01.s, variable~From_Adult_or_child, value.var = "value.max")
+
+up1=upset(data = mt01.matrix)
+g1 <- as.ggplot(up1)
+ggsave(g1, file="DNA_upsetplot.pdf", width = 5, height = 5)
+
+```
+
+Figure X10 Microdiversity
+```{r}
+pi=read.table("./pi_for_each_sample_subsampling_1000_times", sep = "\t")
+pi_mp=merge(pi,mp, by.x="V1", by.y="samples")
+pi_mp=merge(pi_mp, shannon, by.x="V1", by.y="sample")
+
+pi.comp=get_comb(pi_mp$From_Adult_or_child)
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ micridiversity 
+pi_pt=ggplot(pi_mp, aes(x= From_Adult_or_child, y=V2,  fill=From_Adult_or_child))+geom_boxplot()+scale_fill_brewer(palette = "Set3")+theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+#ggplot(pi_mp, aes(x= From_Adult_or_child, y=V2,  fill=From_Adult_or_child))+geom_boxplot()+scale_fill_brewer(palette = "Set3")+theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())+stat_compare_means(comparisons = pi.comp)
+
+shannon_mic_point_v1=ggscatter(pi_mp, x = "V2", y = "alpha_index",
+          color = "From_Adult_or_child", palette = "npg",
+          ellipse = TRUE, ellipse.type="confidence",ellipse.level = 0.95,
+          mean.point = F, star.plot = TRUE) + labs(y='Shannon index', x='Microdiversity (Avg. pi)')
+
+shannon_mic_point_corr=ggplot(pi_mp, aes(x= alpha_index, y=V2))+geom_point()+geom_smooth(method="lm")+theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())+labs(y="Microdiversity (Avg. pi)", x='Shannon index')+stat_cor(data=pi_mp, method = "pearson")
+
+########## save plot
+ggsave(shannon_mic_point_corr, file="Figure_X10_shannon_mic_point_corr.pdf", width = 7, height = 5, useDingbat=F)
+ggsave(pi_pt, file="Figure_X10_shannon_mic_box_plot.pdf", width = 7, height = 5, useDingbat=F)
+```
+
+diff tax using Maaslin2
+```{r}
+library(Maaslin2)
+
+select_table=function(tb, sample_name){
+  tmp=subset(tb, select = sample_name)
+  fam=t(tmp)
+  row.names(fam)=c("samples", rownames(fam)[2:nrow(fam)])
+  fam
+}
+
+adult_sample=subset(mp, Adult_or_child == "adult")[c(1,5)]
+adult_dt=select_table(ab_family_sum, c('family', as.character(adult_sample[,1])))
+
+write.table(adult_dt, "Maaslin2/adult_family_abundance", col.names = F, row.names = T, sep = "\t", quote = F)
+write.table(adult_sample, "Maaslin2/adult_family_mapping", col.names = T, row.names = F, sep = "\t", quote = F)
+#################### write table for diff group
+
+write.table(fam, "family_abundance", col.names = F, row.names = T, sep = "\t", quote = F)
+
+input_data='/userdatanode3/data_jinh/virome_dna_rna/02_dna_pipeline/12_plot_v2/Maaslin2/adult_family_abundance'
+input_metadata = '/userdatanode3/data_jinh/virome_dna_rna/02_dna_pipeline/12_plot_v2/Maaslin2/adult_family_mapping'
+fit_data <- Maaslin2(input_data, input_metadata, 'Maaslin2/adult_output', transform = "NONE", standardize = FALSE, normalization= 'NONE')
+
+```
+
+

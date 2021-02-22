@@ -1,0 +1,217 @@
+---
+title: "DNA virome PCoA plot"
+output: html_document
+---
+    
+1. Coverage circle and length
+2. Taxonomy barplot or pieplot
+3. Alpha diversity
+4. Beta diversity
+5. SNP density
+6. PN/PS
+
+beta_diversity
+```{r, eval=F, echo=T}
+setwd("/userdatanode3/data_jinh/virome_dna_rna/02_dna_pipeline/11_plot")
+library(vegan)
+library(ggplot2)
+library(ape)
+library(philentropy)
+library(ggpubr)
+
+rare.tb<-read.table("pileup.combined_reset_reads.matrix.rere", header = T, sep = "\t", row.names = 1)
+mp<-read.table("mapping_v2.txt", header = T, sep = "\t")
+rare.tb<-rare.tb[,mp$samples]
+
+
+#remove rows which sum is equal to zero
+rare.tb_up0<-rare.tb[rowSums(rare.tb)>0,]
+
+#Function of plot data 
+get_plot_data<-function(dist_data){
+  plot.list=list()
+  dist.pcoa=cmdscale(dist_data, eig=TRUE)
+  pc12=dist.pcoa$points[,1:2]
+  pc_importance=round(dist.pcoa$eig/sum(dist.pcoa$eig)*100,digits = 2)
+  pc12=as.data.frame(pc12) 
+  pc12[,3]=row.names(pc12)
+  x.label=paste("PCoA 1 (", pc_importance[1],digits=4,"%)", sep="")
+  y.label=paste("PCoA 2 (", pc_importance[2],digits=4,"%)", sep="")
+  plot.list$pc12<-pc12
+  plot.list$x.label<-x.label
+  plot.list$y.label<-y.label
+  return(plot.list)
+}
+
+######################################### beta diversity
+##### bray curtis
+dist.bray<-vegdist(t(rare.tb_up0), method = "bray")
+dist.bray.pc<-get_plot_data(dist.bray)
+
+dist.bray.pc.plot<-merge(dist.bray.pc$pc12, mp, by.x="V3", by.y="samples")
+
+p.bray=ggplot(dist.bray.pc.plot, aes(x=V1,y=V2,colour=From,shape=Adult_or_child)) + geom_point(alpha=0.6, size=2) + labs(x=dist.bray.pc$x.label, y=dist.bray.pc$y.label, title="Bray curtis PCoA")+scale_color_brewer(palette="Dark2")+theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+##### jsd
+dist.jsd<-JSD(t(rare.tb_up0))
+rownames(dist.jsd)<-colnames(rare.tb_up0)
+colnames(dist.jsd)<-colnames(rare.tb_up0)
+
+jsd.pc<-get_plot_data(dist.jsd)
+
+jsd.pc.plot<-merge(jsd.pc$pc12, mp, by.x="V3", by.y="samples")
+
+p.jsd=ggplot(jsd.pc.plot, aes(x=V1,y=V2,colour=From,shape=Adult_or_child)) + geom_point(alpha=0.6, size=2) + labs(x=jsd.pc$x.label, y=jsd.pc$y.label, title="Jensen-Shannon Divergence PCoA")+scale_color_brewer(palette="Dark2")+theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+##### NMDS bray
+m<-monoMDS(dist.bray)
+dat<-m$points
+dat<-transform(dat,samples=row.names(dat))
+mer_dat<-merge(dat,mp,by="samples")
+
+##### ANSIM
+an<-anosim(dist.bray,mp$From,permutations = 999)
+
+nmds<-ggplot(mer_dat,aes(MDS1,MDS2,col=From, shape=Adult_or_child))+geom_point(size=3)+ labs(title= paste("P-value=",an$signif,"\t","R=",round(an$statistic,2))) + scale_color_brewer(palette="Dark2")+theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+##### NMDS
+library(ggExtra)
+nmds.plot=ggscatter(mer_dat, x = "MDS1", y = "MDS2",
+          color = "From_Adult_or_child", palette = "npg",
+          shape = "Adult_or_child", ellipse = TRUE, ellipse.type="confidence",ellipse.level = 0.95,
+          mean.point = F, star.plot = TRUE, 
+          ggtheme = theme_bw() ) + labs(title= paste("P-value=",an$signif,"\t","R=",round(an$statistic,2))) 
+nmds.plot
+#nmds.plot.2<-ggMarginal(nmds.plot, type = "density", width = 7, height = 5)
+
+#save plot
+ggsave(nmds.plot, filename = "nmds.pcoa.pdf", width = 7, height = 5)
+
+############################# alpha diversity
+library(vegan)
+library(ggplot2)
+library(ggpubr)
+
+dt<-read.table("pileup.combined_reset_reads.matrix.rere.filtered", sep = "\t", header = T, row.names = 1)
+mp<-read.table("mapping_v2.txt", header = T, sep = "\t")
+
+#shannon 
+dt=dt[,which(colnames(dt)!="ACD")]
+Shannon.Wiener=data.frame(shannon=diversity(t(dt),"shannon"))
+Shannon.Wiener$sample=rownames(Shannon.Wiener)
+
+shannon.2 = read.table("Vout_table.alpha_2/shannon_index.txt", header = T, sep = "\t")
+shannon.2.mp = merge(shannon.2, mp, by.x= "sample", by.y="samples")
+
+pt.shannon<-merge(Shannon.Wiener, mp, by.x="sample", by.y="samples")
+compare_means(shannon~From_Adult_or_child, data=pt.shannon)
+shannon.plot=ggplot(pt, aes(y=shannon, x=From_Adult_or_child, fill=From_Adult_or_child))+geom_boxplot()
+
+Simpson=data.frame(simpson=diversity(t(dt),"simpson"))
+Simpson$samples=rownames(Simpson)
+pt.simpson=merge(Simpson, mp, by.x="samples", by.y="samples")
+compare_means(simpson~From_Adult_or_child, data=pt.simpson)
+simpson.plot=ggplot(pt.simpson, aes(y=simpson, x=From_Adult_or_child, fill=From_Adult_or_child))+geom_boxplot()
+
+#### S
+S=data.frame(S=diversity(t(dt),"invsimpson"))
+S$sample=rownames(S)
+pt.S=merge(S, mp, by.x="sample", by.y="samples")
+
+##### curve
+curve=read.table("Vout_table.alpha_2/richness_curves", header = T, sep = "\t")
+curve.mp=merge(curve, mp, by="sample",by.x="sample", by.y="samples")
+se_mean=summaryBy(alpha~From_Adult_or_child, data = curve.mp, FUN=c(mean, sd))
+
+#~~~~~~~~~~~ se function of alpha diversity
+mean=aggregate(shannon~From_Adult_or_child, data=mete_table, FUN=mean)
+se=aggregate(shannon~From_Adult_or_child, data=mete_table, FUN=s)
+
+##### Chao1
+chao=data.frame(t(estimateR(t(dt))))
+chao$samples=rownames(chao)
+pt.chao=merge(chao, mp, by.x="samples", by.y="samples")
+
+compare_means(S.chao1~From_Adult_or_child, data=pt.chao)
+chao1.plot=ggplot(pt.chao, aes(y=S.chao1, x=From_Adult_or_child, fill=From_Adult_or_child))+geom_boxplot() + scale_fill_brewer(palette="Dark2")+theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+################################### Write table
+tb<-t(dt)
+write.table(tb, file = "Vout_table.txt", sep = "\t", row.names = F, col.names = T, quote = F)
+
+ggsave(chao1.plot, filename = "chao1_diversity.pdf", height = 5, width = 5)
+
+save.image(file = "DNA_virome_PCoA_plot.RData")
+
+######################################### Virus size vs depth #########################################
+library(ggExtra)
+dp<-read.table("rep_virus.depth.f", sep = "\t")
+vir.tax.family=vt.pie.family.ab[,c(1,2)]
+dp.plot<-merge(dp,vir.tax.family, by.x="V1", by.y="Scaffold")
+family.sum.known$new=family.sum.known$Var2
+dp.plot.new=merge(dp.plot, family.sum.known, by.x="family", by.y="Var2", all.x=T)
+dp.plot.new$new=as.character(dp.plot.new$new)
+dp.plot.new$new[is.na(dp.plot.new$new)]="F_Other"
+# plus circled info
+cir=read.table("VIRSorter_circu.list.f1", sep = "\t")
+dp.plot.new=merge(dp.plot.new, cir, by.x = "V1", by.y = "V1", all.x = T)
+dp.plot.new$V2.y=as.character(dp.plot.new$V2.y)
+dp.plot.new$V2.y[is.na(dp.plot.new$V2.y)]="linear"
+# create new dataframe
+dp.plot.new.f=data.frame(Scaffold=dp.plot.new$V1, family=dp.plot.new$family, new_family=dp.plot.new$new, length=dp.plot.new$V2.x, depth=dp.plot.new$V3, cir=dp.plot.new$V2.y)
+
+length_vs_depth=ggplot(dp.plot.new.f, aes(x=length, y=depth, group=cir, color=new_family, shape=cir, size=cir, fill=new_family))+geom_point()+scale_x_log10()+scale_y_log10()+scale_color_brewer(palette = "Set3")+scale_fill_brewer(palette = "Set3")+scale_shape_manual(values = c(21,22))+scale_size_manual(values = c(3,1))+theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+length_vs_depth.m=ggMarginal(length_vs_depth)
+
+#Write table
+write.table(dp.plot.new.f, file = "Virus_scaffold_depth_and_size.txt", sep = "\t", row.names = F, col.names = T, quote = F)
+ggsave(length_vs_depth.m, file="length_vs_depth.pdf", width = 7, height = 5)
+
+#family level PCoA
+vt.family.ab.sm
+famliy.dist.bray<-vegdist(t(vt.family.ab.sm[2:ncol(vt.family.ab.sm)]), method = "bray")
+famliy.dist.bray.pc<-get_plot_data(famliy.dist.bray)
+famliy.dist.bray.pc.plot<-merge(famliy.dist.bray.pc$pc12, mp, by.x="V3", by.y="samples")
+family.p.bray=ggplot(famliy.dist.bray.pc.plot, aes(x=V1,y=V2,colour=From,shape=Adult_or_child)) + geom_point(alpha=0.6, size=2) + labs(x=famliy.dist.bray.pc$x.label, y=famliy.dist.bray.pc$y.label, title="Bray curtis PCoA")+scale_color_brewer(palette="Dark2")+theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+#diff family
+family_ab=vt.pie.family.ab.sm
+family_ab.mt=melt(family_ab)
+family_ab.mt=merge(family_ab.mt, mp, by.x = "variable", by.y="samples")
+family.compare=compare_means(value~From_Adult_or_child,family_ab.mt, group.by="family")
+
+
+```
+
+```{r eval=T, fig.height=7, fig.width=14, warning=FALSE}
+load("/userdatanode3/data_jinh/virome_dna_rna/02_dna_pipeline/11_plot/DNA_virome_PCoA_plot.RData")
+load("/userdatanode3/data_jinh/virome_dna_rna/02_dna_pipeline/11_plot/DNA_virome_tax_plot.RData")
+library(ggpubr)
+library(patchwork)
+library(ggExtra)
+# 1.depth vs size
+ggMarginal(length_vs_depth)
+
+# 2.tax pie plot 
+plot.pie1 #number of scaffold pie plot
+knitr::kable(unkonwn_known)
+knitr::kable(family.sum.known[,c(1,2)])
+
+plot.pie2 #abundance of known and unknown virus
+plot.bar
+knitr::kable(vt.pie.family.ab.sm.pd.sm)
+box.1
+knitr::kable(compare_means(value~From_Adult_or_child,data=vt.pie.family.ab.sm.sm.mt.mg))
+# 3.alpha diversity 
+chao1.plot
+knitr::kable(compare_means(S.chao1~From_Adult_or_child, data=pt.chao))
+# 4.beta diversity
+nmds.plot
+
+#ggsave(plot.pie1, filename = "tax_pie_number_of_vir_scaf.pdf", width = 7, height = 5)
+#ggsave(plot.pie2, filename = "tax_pie_abundance_vir_scaf.pdf", width = 7, height = 5)
+#ggsave(chao1.plot, filename = "chao1.diversity.pdf", width = 3, height = 5)
+#ggsave(plot.bar, filename = "tax.barplot.pdf", width = 14, height = 5)
+#ggsave(box.1, filename = "known_vs_unkuown.pdf", width = 5, height = 5)
+```

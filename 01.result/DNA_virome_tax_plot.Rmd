@@ -1,0 +1,138 @@
+---
+title: "DNA_tax_plot"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, eval=F, echo=FALSE}
+#sed -i 's/O_Caudovirales;F_Podoviridae;G_crAss-like-phages/O_Caudovirales;F_Podoviridae_crAssphage;G_crAss-like-phages/g' merged_table_virus_rep.out
+setwd("/userdatanode3/data_jinh/virome_dna_rna/02_dna_pipeline/11_plot")
+vt<-read.table("merged_table_virus_rep.out.filtered", sep = "\t", header = T)
+
+vt.family=subset(vt, family_rate>=0.33)
+t=strsplit(as.character(vt.family$taxonomy), ';')
+t=unlist(t)
+family.name=t[grep("F_", t)]
+
+vt.family$family.name=family.name
+
+#abundance table and mapping files
+ab=read.table("pileup.combined_reset_reads.matrix.rere", header = T, sep="\t")
+mp<-read.table("mapping_v2.txt", header = T, sep="\t")
+vt.family.ab<-merge(vt.family, ab, by.x="Scaffold", by.y = "ID", all.x = T)
+
+
+library(doBy)
+library(reshape2)
+library(ggplot2)
+library(dplyr)
+vt.family.ab.sm=summaryBy(list(colnames(vt.family.ab)[25:ncol(vt.family.ab)], c("family.name")), data = vt.family.ab, FUN = sum)
+colnames(vt.family.ab.sm)<-gsub(".sum","" ,colnames(vt.family.ab.sm))
+#remove ACD
+vt.family.ab.sm=vt.family.ab.sm[,which(colnames(vt.family.ab.sm)!="ACD")]
+
+#get rank
+vt.family.ab.sm.od=vt.family.ab.sm[order(rowSums(vt.family.ab.sm[2:ncol(vt.family.ab.sm)]), decreasing = T),]
+vt.family.ab.sm.od=subset(vt.family.ab.sm.od, family.name != "F_unclass")
+vt.family.ab.sm.od$family=c(vt.family.ab.sm.od$family.name[1:10], rep("Other",nrow(vt.family.ab.sm.od)-10))
+vt.family.ab.sm.od=summaryBy(list(colnames(vt.family.ab.sm.od)[2:61], c("family")), data=vt.family.ab.sm.od, FUN = sum)
+colnames(vt.family.ab.sm.od)<-gsub(".sum","" ,colnames(vt.family.ab.sm.od))
+
+
+vt.family.ab.sm.mt<-melt(vt.family.ab.sm.od)
+vt.family.ab.sm.mt.map<-merge(vt.family.ab.sm.mt, mp, by.x = "variable", by.y="samples")
+
+vt.family.ab.sm.mt.map$From_Adult_or_child<-factor(vt.family.ab.sm.mt.map$From_Adult_or_child, levels =  c("China_adult", "Pakistan_adult", "China_child", "Pakistan_child"))
+#plot
+p.id=ggplot(vt.family.ab.sm.mt.map, aes(variable, value, fill=family))+geom_bar(stat="identity", width=1)+facet_grid(~From_Adult_or_child, scales="free_x",space="free_x")+theme_bw()+theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())+scale_fill_brewer(palette="Set3")
+
+p.fill=ggplot(vt.family.ab.sm.mt.map, aes(variable, value, fill=family))+geom_bar(stat="identity", width=1, position = 'fill')+facet_grid(~From_Adult_or_child, scales="free_x",space="free_x")+theme_bw()+theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())+scale_fill_brewer(palette="Set3")
+
+known.table=vt.family.ab.sm[,which(vt.family.ab.sm$family.name != "F_unclass")]
+
+##### Pieplot number of scaffold 
+vt.pie=data.frame(Scaffold= vt$Scaffold)
+vt.pie.family=merge(vt.pie, data.frame(Scaffold=vt.family$Scaffold, family=vt.family$family.name), by="Scaffold", all.x=T)
+
+vt.pie.family$family[is.na(vt.pie.family$family)]="F_unclass"
+family.sum=as.data.frame(table(vt.pie.family$family))
+family.sum=family.sum[order(family.sum$Freq, decreasing = T),]
+family.sum$Var2<-c(as.character(family.sum$Var1[1:10]), rep("F_Other", nrow(family.sum)-10))
+family.sum.known<-summaryBy(Freq~Var2, data=family.sum, FUN = sum)
+family.sum.known=subset(family.sum.known, Var2!="F_unclass")
+family.sum.known=arrange(family.sum.known, Freq.sum)
+family.sum.known$Var2<-factor(family.sum.known$Var2, levels = arrange(family.sum.known, Freq.sum)[,1])
+
+unkonwn_virus=as.numeric(subset(family.sum, Var1=="F_unclass")[,2])
+knownvirus=sum(family.sum$Freq)-unkonwn_virus
+unkonwn_known=data.frame(Freq=rbind(unkonwn_virus, knownvirus))
+unkonwn_known$Var=rownames(unkonwn_known)
+
+#ggpie.1
+pie.nb<-ggpie(family.sum.known, x = 'Freq.sum', fill = "Var2",  lab.pos = "in")+ scale_fill_brewer(palette="Set3")
+pie.kunk<-ggpie(unkonwn_known, "Freq", fill = "Var",  lab.pos = "in")+scale_fill_brewer(palette="Dark2")
+
+#Pieplot for abundance 
+vt.pie.family.ab=merge(vt.pie.family, ab, by.x="Scaffold", by.y = "ID", all.x=T)
+#rm ACD
+vt.pie.family.ab=vt.pie.family.ab[, which(colnames(vt.pie.family.ab)!="ACD")]
+vt.pie.family.ab.sm=summaryBy(list(colnames(vt.pie.family.ab[3:ncol(vt.pie.family.ab)]),c("family")), data=vt.pie.family.ab, FUN = sum)
+colnames(vt.pie.family.ab.sm)=gsub(".sum","", colnames(vt.pie.family.ab.sm))
+
+vt.pie.family.ab.sm.pd<-data.frame(family=vt.pie.family.ab.sm$family, means=rowMeans(vt.pie.family.ab.sm[2:61]))
+vt.pie.family.ab.sm.pd=vt.pie.family.ab.sm.pd[order(vt.pie.family.ab.sm.pd$means, decreasing = T),]
+vt.pie.family.ab.sm.pd$Var2<-c(as.character(vt.pie.family.ab.sm.pd$family[1:10]), rep("F_Other", nrow(family.sum)-10))
+vt.pie.family.ab.sm.pd.sm<-summaryBy(means~Var2, data = vt.pie.family.ab.sm.pd, FUN=sum)
+vt.pie.family.ab.sm.pd.sm=arrange(vt.pie.family.ab.sm.pd.sm, means.sum)
+
+unkonwn_virus.ab=as.numeric(subset(vt.pie.family.ab.sm.pd.sm, Var2=="F_unclass")[,2])
+knownvirus.ab=sum(vt.pie.family.ab.sm.pd.sm$means.sum)-unkonwn_virus.ab
+unkonwn_known.ab=data.frame(Freq=rbind(unkonwn_virus.ab, knownvirus.ab))
+unkonwn_known.ab$Var=rownames(unkonwn_known.ab)
+
+#pie.2  ab
+vt.pie.family.ab.sm.pd.sm.2=subset(vt.pie.family.ab.sm.pd.sm, Var2!="F_unclass")
+vt.pie.family.ab.sm.pd.sm.2=arrange(vt.pie.family.ab.sm.pd.sm.2, means.sum)
+vt.pie.family.ab.sm.pd.sm.2$Var2<-factor(vt.pie.family.ab.sm.pd.sm.2$Var2, levels = unique(vt.pie.family.ab.sm.pd.sm.2$Var2))
+vt.pie.family.ab.sm.pd.sm.2$value=paste(round(vt.pie.family.ab.sm.pd.sm.2$means.sum/sum(vt.pie.family.ab.sm.pd.sm.2$means.sum)*100,2),"%", sep="")
+pie.nb.ab<-ggpie(vt.pie.family.ab.sm.pd.sm.2, x = 'means.sum', fill = "Var2",  lab.pos = "in", label =vt.pie.family.ab.sm.pd.sm.2$value)+ scale_fill_brewer(palette="Set3")
+
+unkonwn_known.ab$lb<-paste(round(unkonwn_known.ab$Freq/sum(unkonwn_known.ab$Freq)*100,2),"%",sep="")
+pie.kunk.ab<-ggpie(unkonwn_known.ab, "Freq", fill = "Var",  lab.pos = "in", label =unkonwn_known.ab$lb)+scale_fill_brewer(palette="Dark2")
+
+#save data
+
+library(patchwork)
+plot.bar=p.id+p.fill
+plot.pie1=pie.kunk+pie.nb
+plot.pie2=pie.kunk.ab+pie.nb.ab
+#plot.bar
+#plot.pie1
+#plot.pie2
+
+tmp=character(); for (i in 1:nrow(vt.pie.family.ab.sm)){if(vt.pie.family.ab.sm$family[i] == "F_unclass"){tmp[i]="F_unclass"}else{tmp[i]="F_classed"} }
+
+vt.pie.family.ab.sm$known_or_unknown=tmp
+vt.pie.family.ab.sm.sm<-summaryBy(list( colnames(vt.pie.family.ab.sm)[2:61],"known_or_unknown"), data=vt.pie.family.ab.sm, FUN=sum)
+
+colnames(vt.pie.family.ab.sm.sm)<-gsub(".sum","", colnames(vt.pie.family.ab.sm.sm))
+
+#to pct
+vt.pie.family.ab.sm.sm[,2:ncol(vt.pie.family.ab.sm.sm)]=vt.pie.family.ab.sm.sm[,2:ncol(vt.pie.family.ab.sm.sm)]/(322710+1891923)
+#plot 
+vt.pie.family.ab.sm.sm.mt=melt(vt.pie.family.ab.sm.sm)
+
+
+vt.pie.family.ab.sm.sm.mt.mg<-merge(vt.pie.family.ab.sm.sm.mt, mp, by.x="variable", by.y="samples")
+
+box.1=ggplot(vt.pie.family.ab.sm.sm.mt.mg, aes(y=value, x=From_Adult_or_child, fill=known_or_unknown, ))+geom_boxplot()+theme_bw()+theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())+scale_fill_brewer(palette="Dark2")
+
+#box.1
+
+save.image(file = "DNA_virome_tax_plot.RData")
+```
+
+

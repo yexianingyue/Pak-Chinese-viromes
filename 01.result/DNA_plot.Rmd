@@ -1,0 +1,797 @@
+---
+title: "DNA_plot"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```
+Note:
+psmelt
+```
+
+# load packages
+```{r warning=FALSE}
+library(microbiome)
+library(reshape2)
+library(DESeq2)
+library(ggplot2)
+library(dplyr)
+library(phyloseq)
+library(doBy)
+library(ggsci)
+library(ggpubr)
+library(plyr)
+library(ggpubr)
+library(cowplot)
+library(vegan)
+library(usedist)
+library(patchwork)
+library(ggcor)
+library(ggcorrplot)
+
+# color
+mypal = pal_npg()(4)
+```
+
+## Required Functions
+```{r}
+###### get topn taxa
+get_topn_taxa <- function(pydata, taxa_level, topn){
+  tb = tax_glom(pydata, taxa_level)
+  tb_mt = psmelt(tb)
+  #return(tb_mt)
+  tb_mt_sm = summaryBy(list("Abundance", taxa_level), data=tb_mt, FUN=c(mean, median)) %>% arrange(desc(Abundance.mean))
+  tb_mt_sm$rank = 1:nrow(tb_mt_sm)
+  new_name = ""
+  for (i in 1:nrow(tb_mt_sm)){
+    if (i<=topn){
+      new_name[i] = as.character(tb_mt_sm[, 1])[i]
+    }else{
+      new_name[i]="Other"
+    }
+  }
+  tb_mt_sm$new_name = new_name
+  plot_format = merge(tb_mt, tb_mt_sm, by = taxa_level)
+  #return result              
+  result = list(plot_format = plot_format, rank = tb_mt_sm)
+  return(result)
+}
+
+
+###### get combinations
+get_comb=function(grp){
+  comp=list()
+  a=combn(unique(grp), 2)
+  for (i in 1:ncol(a)) {comp[i]=list(as.character(a[,i]))}
+  comp
+}
+
+
+###### get plist
+get_plist <- function(physeq, color, shape="NA"){
+  dist = "bray"
+  ord_meths = c("CCA", "RDA", "PCoA", "DCA", "MDS", "NMDS")
+  if (shape != "NA"){
+    plist = llply(as.list(ord_meths), function(i, physeq, dist){
+        ordi = ordinate(physeq, method=i, distance=dist)
+        plot_ordination(physeq, ordi, "Sample", color = color, shape = shape) + theme_bw() + scale_color_npg() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) + labs(title = i)
+}, physeq, dist)
+  }else{
+    plist = llply(as.list(ord_meths), function(i, physeq, dist){
+        ordi = ordinate(physeq, method=i, distance=dist)
+        plot_ordination(physeq, ordi, "Sample", color = color) + theme_bw() + scale_color_npg() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) + labs(title = i)
+}, physeq, dist)
+  }
+  
+  names(plist) <- ord_meths
+  return(plist)
+}
+
+###### get scatter boxplot
+get_scatter_boxplot <- function(ggpt, cl){
+  pc1=colnames(ggpt$data)[1]
+  pc2=colnames(ggpt$data)[2]
+  xbox = axis_canvas(ggpt, axis = "x", coord_flip = TRUE) + 
+    geom_boxplot(data = ggpt$data, aes_string(y = pc1, x = cl, color = cl)) + 
+    scale_x_discrete() + coord_flip() + scale_color_npg()
+  ybox = axis_canvas(ggpt, axis = "y") + 
+    geom_boxplot(data = ggpt$data, aes_string(y = pc2, x = cl, color = cl)) +
+    scale_x_discrete() + scale_color_npg()
+  ## join
+  pt = insert_xaxis_grob(ggpt, xbox, grid::unit(1, "in"), position = "top") %>%
+       insert_yaxis_grob(ybox, grid::unit(1, "in"), position = "right")
+  ggdraw(pt)
+}
+
+###### get scatter boxplot pvalue 
+get_scatter_boxplot_pvalue <- function(ggdata, grp){
+  pc1 = "Axis_1"
+  pc2 = "Axis_2"
+  fmpc1 = as.formula(paste(pc1, grp, sep=" ~ "))
+  fmpc2 = as.formula(paste(pc2, grp, sep=" ~ "))
+  pvalue1 = data.frame(compare_means(fmpc1, ggdata, group.by = c("Beta") ))
+  pvalue2 = data.frame(compare_means(fmpc2, ggdata, group.by = c("Beta") ))
+  rbind(pvalue1, pvalue2)
+}
+
+## a test for get_scatter_boxplot
+# pp = get_scatter_boxplot(p, "NMDS1", "NMDS2", "New_Treat")
+#get_scatter_boxplot_pvalue(time_list_data$B$CCA$data, grp = "New_Treat")
+
+
+###### Plist_aitchison
+get_plist_aitchison <- function(physeq){
+  dist = "euclidean"
+  ord_meths = c("PCoA")
+  plist = llply(as.list(ord_meths), function(i, physeq, dist){
+        ordi = ordinate(physeq, method=i, distance=dist)
+        plot_ordination(physeq, ordi, "Sample") + theme_bw() + scale_color_npg() + theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) + labs(title = i)
+}, physeq, dist)
+  names(plist) <- ord_meths
+  return(plist)
+}
+
+
+###### get grouping plot
+get_pc_plot <- function(plist_data, group, type){
+  if (type == "NMDS"){
+    pt =  ggscatter(plist_data$data, x = "NMDS1", y = "NMDS2",
+          color = group, palette = "npg",
+          ellipse = TRUE, ellipse.type="confidence",ellipse.level = 0.95,
+          mean.point = F, star.plot = TRUE, 
+          ggtheme = theme_bw() ) + labs(title = type )
+  }else if (type == "PCoA" || type == "MDS"){
+    pt = ggscatter(plist_data$data, x = "Axis.1", y = "Axis.2",
+          color = group, palette = "npg",
+          ellipse = TRUE, ellipse.type="confidence",ellipse.level = 0.95,
+          mean.point = F, star.plot = TRUE, 
+          ggtheme = theme_bw()) + labs(x = plist_data$labels$x, y = plist_data$labels$y, title = type) 
+  }else if (type == "CCA"){
+    pt = ggscatter(plist_data$data, x = "CA1", y = "CA2",
+          color = group, palette = "npg",
+          ellipse = TRUE, ellipse.type="confidence",ellipse.level = 0.95,
+          mean.point = F, star.plot = TRUE, 
+          ggtheme = theme_bw()) + labs(x = plist_data$labels$x, y = plist_data$labels$y, title = type) 
+  }else if (type == "RDA"){
+    pt = ggscatter(plist_data$data, x = "PC1", y = "PC2",
+          color = group, palette = "npg",
+          ellipse = TRUE, ellipse.type="confidence",ellipse.level = 0.95,
+          mean.point = F, star.plot = TRUE, 
+          ggtheme = theme_bw()) + labs(x = plist_data$labels$x, y = plist_data$labels$y, title = type)
+  }else if (type == "DCA"){
+    pt = ggscatter(plist_data$data, x = "DCA1", y = "DCA2",
+          color = group, palette = "npg",
+          ellipse = TRUE, ellipse.type="confidence",ellipse.level = 0.95,
+          mean.point = F, star.plot = TRUE, 
+          ggtheme = theme_bw()) + labs(x = plist_data$labels$x, y = plist_data$labels$y, title = type)
+  }else{
+    return("Wrong type")
+  }
+  return(pt)
+}
+
+###### get plist (Need optimize)
+get_scatter_plit = function(group, plist) {plist %>%
+  llply(function(plist_data){
+    get_pc_plot(plist_data, group = group, type = plist_data$labels$title) 
+  })
+}
+
+get_scatter_boxplot_plist = function(group, plist) {plist %>% 
+    llply(function(plist_data){
+      get_pc_plot(plist_data, group = group, type = plist_data$labels$title) }) %>% 
+    llply(function(ggplot_data){
+    get_scatter_boxplot(ggplot_data, cl = group)
+  })
+}
+
+###### run wilcox.test and summary the mean and median of each group. (Bugs here...!!!!!!! Now it only correctly at OTU level... or given a family level matrix)
+get_wilcox_result = function(physeq, label, level){
+  CLR_mt = psmelt(physeq)
+  fm = as.formula(paste("Abundance ~ ", label, sep = "" ) )
+  CLR_mt_wilcox = compare_means(fm, CLR_mt, group.by = level) %>% as.data.frame()
+  ## summary the means and median
+  mm = summaryBy(list("Abundance", c(label, level)), data = CLR_mt, FUN = c(mean, median))
+  mm$label = paste(mm[, 2], mm[, 1])
+  CLR_mt_wilcox$label1 = paste(CLR_mt_wilcox[, 1], CLR_mt_wilcox[, 3])
+  CLR_mt_wilcox$label2 = paste(CLR_mt_wilcox[, 1], CLR_mt_wilcox[, 4])
+  out = merge(CLR_mt_wilcox, mm, by.x = "label1", by.y = "label") %>% merge(mm, by.x = "label2", by.y = "label")
+  out = out[, -3]
+  colnames(out) = gsub(".x", ".group1", colnames(out))
+  colnames(out) = gsub(".y", ".group2", colnames(out))
+  return(out)
+}
+
+#test = get_wilcox_result(sub_test, "New_Treat_Time")
+
+###### deseq2 group
+get_deseq_group <- function(physeq, group, label){
+  deseq_out = list()
+  cbn <- combn(unique(group), 2)
+  for(i in 1:ncol(cbn)){
+    compared_names = paste(as.character(cbn[,i][1]), as.character(cbn[,i][2]), sep = "_vs_")
+    metadata = data.frame(sample_data(physeq))
+    sub_sample = metadata[metadata[label][,1] %in% cbn[,i], ]
+    sub_name = rownames(sub_sample)
+    sub_physeq = prune_samples(sample_names(physeq) %in% sub_name, physeq) 
+    sub_physeq_prune = prune_taxa(taxa_sums(sub_physeq) > 0, sub_physeq) 
+    fm = as.formula(paste("~", label, sep = " "))
+    ds = phyloseq_to_deseq2(sub_physeq_prune, fm)
+    dds = DESeq(ds)
+    res = results(dds)
+    df = as.data.frame(res)
+    df$taxon = rownames(df)
+    df = df %>% arrange(log2FoldChange, padj)
+    deseq_out[i] = list(df)
+    names(deseq_out)[i] = compared_names
+  }
+  deseq_out
+}
+
+###### adonis_group
+get_anosim_group <- function(phy_dist, physeq, group, label){
+  permanova_out = list()
+  cbn <- combn(unique(group), 2)
+  for(i in 1:ncol(cbn)){
+    compared_names = paste(as.character(cbn[,i][1]), as.character(cbn[,i][2]), sep = "_vs_")
+    metadata = data.frame(sample_data(physeq))
+    sub_sample = metadata[metadata[label][,1] %in% cbn[,i], ]
+    sub_name = rownames(sub_sample)
+    sub_dist = dist_subset(phy_dist, sub_name)
+    fm = as.formula(paste("sub_dist ~ ", label, sep = "" ) )
+    permanova_out[i] = adonis(fm, data = sub_sample)
+    names(permanova_out)[i] = compared_names
+  }
+  permanova_out
+}
+
+######
+get_prevlence_group <- function(physeq, group, label){
+  prevalence_out = data.frame()
+  cbn <- as.character(unique(group))
+  for(i in 1:length(cbn)){
+    metadata = data.frame(sample_data(physeq))
+    sub_sample = metadata[metadata[label][,1] %in% cbn[i], ]
+    sub_name = rownames(sub_sample)
+    sub_physeq = prune_samples(sample_names(physeq) %in% sub_name, physeq) 
+    otu_prevalence = prevalence(sub_physeq, detection=0.001) %>% as.data.frame()
+    otu_prevalence$group = rep(cbn[i], ncol(otu_prevalence))
+    otu_prevalence$OTU = rownames(otu_prevalence)
+    prevalence_out = rbind(prevalence_out, otu_prevalence)
+  }
+  colnames(prevalence_out) = c("Prevalence", "group", "OTU")
+  prevalence_out = dcast(prevalence_out, OTU~group, value.var = "Prevalence")
+  return(prevalence_out)
+}
+```
+
+# load data (metaphlan2 and SGB)
+mapping, taxonomic file and abundance file
+```{r warning=T}
+setwd("/userdatanode3/data_jinh/virome_dna_rna/02_dna_pipeline/13_plot_v3")
+
+###### mapping
+raw_mp = read.table("./mapping_v2.txt", header=T, sep="\t",row.names = 1)
+mp = raw_mp 
+mp$Sample  =rownames(mp)
+
+###### taxa and abundance table.
+meta_ab=read.table("./DNA_virus_abundance.txt", header=T, row.names = 1, sep = "\t")
+meta_tax=read.table("./Virus_family.out", header=T, row.names=1, sep = "\t")
+
+# subset data only for week0, week4 and week8.
+## Note phyloseq input rawdata format must be matrix, not datafarme...
+meta_ab = subset(meta_ab, select = as.character(mp$Sample))
+meta_ab = meta_ab[which(rowSums(meta_ab)!=0),] # remove OTU not existied in these samples.
+meta_tax = meta_tax[rownames(meta_tax) %in% rownames(meta_ab), ] #remove these OTUs taxon
+
+
+###### Create a phyloseq input
+meta_MP = sample_data(raw_mp)
+meta_OTU = otu_table(as.matrix(meta_ab), taxa_are_rows = T)
+meta_TAX = tax_table(as.matrix(meta_tax))
+meta_physeq = phyloseq(meta_OTU, meta_TAX, meta_MP)
+
+```
+
+  
+# S1 Taxa barplot
+```{r}
+### pure tax
+family_physeq = subset_taxa(meta_physeq, Family != "F_unclass")
+
+###### family level (Here we only choose top 10 taxa)
+
+meta_family_rank = get_topn_taxa(family_physeq, "Family", 10)
+
+## family bar plot
+family_bar = ggplot(meta_family_rank$plot_format, aes(Sample, Abundance, fill=new_name))+geom_bar(stat="identity", width=1, position = 'fill')+facet_grid(~From_Adults_or_children, scales="free_x",space="free_x")+theme_bw()+theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())+scale_fill_brewer(palette="Set3")
+
+```
+
+# S2 beta diversity
+```{r}
+plist = get_plist(meta_physeq, color="From_Adults_or_children")
+scatter_plist = get_scatter_plit("From_Adults_or_children", plist)
+#scatter_box_plist = get_scatter_boxplot("From_Adults_or_children", plist)
+
+# PC pvalue
+pdataframe = ldply(plist, function(y){
+    df = y$data
+    colnames(df)[c(1,2)] = c("Axis_1", "Axis_2")
+    df
+    }, .id = "Beta")
+
+scatter_boxplot_pvalue = get_scatter_boxplot_pvalue(pdataframe, grp= "From_Adults_or_children")
+
+# adonis
+phy_dist = phyloseq::distance(meta_physeq, method="bray")
+anosim_bray = get_anosim_group(phy_dist, meta_physeq, mp$From_Adults_or_children, "From_Adults_or_children")
+adonis_out = ldply(anosim_bray, function(x){r = x$R2[1];  p = x$`Pr(>F)`[1]; cbind(r, p)} )
+write.table(adonis_out, file='S2_adonis_out.txt', sep = "\t", row.names = F, quote = F)
+
+adonis_out$name1 = ldply(strsplit(adonis_out$.id, "_vs_") )[,1] ; adonis_out$name2 = ldply(strsplit(adonis_out$.id, "_vs_") )[,2]
+
+
+# id = ""; r=""; p=""; name=""
+# input = unique(adonis_out$name1)
+# for (i in 1:length(input)){
+#   id[i] = paste(input[i], input[i], sep = "_vs_")
+#   r[i] = 0; p[i] = 1
+#   name[i] = input[i]
+# }
+# 
+# r = as.numeric(r); p = as.numeric(p); name = as.character(name)
+# adonis_out_modif = data.frame(.id = id, r = r, p=p, name1=name, name2=name) %>% rbind(adonis_out)
+# 
+# ## change names
+# name3 = ""; name4 = ""
+# for (i in 1:nrow(adonis_out_modif)){ 
+#   nm1 = as.character(adonis_out_modif$name1[i]) ; nm2 = as.character(adonis_out_modif$name2[i])
+#   if(nm1 > nm2 ){
+#     name3[i] = nm1 ; name4[i] = nm2
+#   }else{
+#     name3[i] = nm2 ; name4[i] = nm1
+#   }
+# }
+# 
+# adonis_out_modif$name3 = name3; adonis_out_modif$name4 = name4
+# adonis_r = arrange(adonis_out_modif, name3, name4) %>% dcast(name3~name4, value.var = "r") 
+# adonis_p = arrange(adonis_out_modif, name3, name4) %>% dcast(name3~name4, value.var = "p") 
+# 
+# rownames(adonis_r) = adonis_r$name3; rownames(adonis_p) = adonis_p$name3
+# adonis_r = adonis_r[, -1]; adonis_p = adonis_p[, -1]
+# 
+# 
+# adonis_r[upper.tri(adonis_r)] = t(adonis_r[lower.tri(adonis_r)])
+# adonis_p[upper.tri(adonis_p)] = t(adonis_p[lower.tri(adonis_p)])
+cormatrix_r = dcast(name1~name2, value.var = 'r', data = adonis_out)
+cormatrix_p = dcast(name1~name2, value.var = 'p', data = adonis_out)
+
+rownames(cormatrix_r) = cormatrix_r$name1 ; rownames(cormatrix_p) = cormatrix_p$name1
+cormatrix_r = cormatrix_r[, -1]; cormatrix_p = cormatrix_p[, -1]
+
+library(corrplot)
+# corrplot(as.matrix(cormatrix_r), p.mat = as.matrix(cormatrix_p), insig = "label_sig",sig.level = c(.0011, .01, .05), pch.cex = 0.8, pch.col = "black",tl.cex=0.8, type = "lower", is.corr = FALSE, diag = F, tl.col = "black")
+```
+
+## diff tax and tax abundance
+```{r}
+physeqfamily = tax_glom(meta_physeq, "Family") 
+family_physeq_nounclass = subset_taxa(physeqfamily, Family != "F_unclass")
+family_physeq_t = transform_sample_counts(family_physeq_nounclass, function(x) x / sum(x)*100 )
+family_physeq_t_mt = psmelt(family_physeq_t)
+family_physeq_t_mt_sm = summaryBy(list("Abundance", c("From_Adults_or_children","Family")), data = family_physeq_t_mt, FUN = mean) %>% arrange(From_Adults_or_children, desc(Abundance.mean))
+
+write.table(family_physeq_t_mt, "Family_realtive_abundance.txt", row.names = F, sep = "\t", quote = F)
+### wilcox
+CLR_wilcox = get_wilcox_result(family_physeq_nounclass, "From_Adults_or_children", "Family")
+write.table(CLR_wilcox, file = "CLR_wilcox.txt" , row.names = F, sep = "\t", quote = F)
+
+family_physeq_t_mt = psmelt(family_physeq_t)
+
+
+#### deseq2
+physeqfamily = tax_glom(meta_physeq, "Family") 
+physeqfamily_deseq = transform_sample_counts(physeqfamily, function(x) x + 1 )
+
+deseq2_out = get_deseq_group(physeqfamily, mp$From_Adults_or_children, "From_Adults_or_children") 
+######## Deseq2 results
+family_tax = tax_table(physeqfamily) %>% as.data.frame()
+family_tax$taxon = rownames(family_tax)
+deseq2_out_result = ldply(deseq2_out, function(x){x}, .id = "Pairs") %>% merge(family_tax, by = "taxon" )
+deseq2_out_result_out = ldply(strsplit(as.character(deseq2_out_result$Pairs), "_vs_")) %>% cbind(deseq2_out_result)
+
+deseq2_out_result_out$label1 = paste(deseq2_out_result_out$V1, deseq2_out_result_out$Family, sep = "_")
+deseq2_out_result_out$label2 = paste(deseq2_out_result_out$V2, deseq2_out_result_out$Family, sep = "_")
+
+physeqfamily_mt = psmelt(physeqfamily) 
+physeqfamily_ab = summaryBy(list("Abundance", c("From_Adults_or_children", "Family")), data = physeqfamily_mt,  FUN = mean)
+physeqfamily_ab$label = paste(physeqfamily_ab$From_Adults_or_children, physeqfamily_ab$Family, sep = "_")
+physeqfamily_ab = physeqfamily_ab[,c("label", "Abundance.mean")]
+deseq2_outfile = merge(deseq2_out_result_out, physeqfamily_ab, by.x="label1", by.y = "label") %>% merge( physeqfamily_ab, by.x="label2", by.y = "label") 
+
+write.table(deseq2_outfile, file = "deseq2_out_result.txt" , row.names = F, sep = "\t", quote = F)
+```
+
+# diff tax plot
+```{r}
+sig_tax_adult=c('F_Anelloviridae','F_Circoviridae', 'F_Lavidaviridae', 'F_Marseilleviridae','F_Rudiviridae', 'F_Adenoviridae')
+
+sig_tax_child = c('F_Adenoviridae','F_Herelleviridae','F_Mimiviridae','F_Myoviridae','F_Phycodnaviridae', 'F_Inoviridae')
+
+physeqfamily = tax_glom(meta_physeq, "Family") 
+physeqfamily_melt = transform_sample_counts(physeqfamily, function(x) x ) %>% psmelt()
+
+## adults 
+physeqfamily_adults = physeqfamily_melt[physeqfamily_melt$Family %in% sig_tax_adult, ] %>% subset(Adults_or_children == "adults")
+
+physeqfamily_children = physeqfamily_melt[physeqfamily_melt$Family %in% sig_tax_child, ] %>% subset(Adults_or_children != "adults")
+
+ca_pa = ggplot(physeqfamily_adults, aes(x=From_Adults_or_children, y=Abundance, fill=From_Adults_or_children))+geom_boxplot(width=1, position =  position_dodge2(width = 0.75, preserve = "single"))+facet_grid(.~Family, scales = "free")  +scale_y_log10() + scale_fill_manual(values = mypal[1:2]) + theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())+labs(y='Per million mapped reads', x='')
+
+cc_pc = ggplot(physeqfamily_children, aes(x=From_Adults_or_children, y=Abundance, fill=From_Adults_or_children))+geom_boxplot(width=1, position =  position_dodge2(width = 0.75, preserve = "single"))+facet_grid(.~Family, scales = "free")  +scale_y_log10() + scale_fill_manual(values = mypal[3:4]) + theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())+labs(y='Per million mapped reads', x='')
+
+pt = ca_pa + cc_pc + plot_layout(nrow=2)
+ggsave(pt, file = "Diff_family.pdf", width = 10, height = 7, useDingbats = F)
+```
+
+# SF Functions
+```{r}
+lv0 = read.table("KO_combined_reset_reads.matrix", header = T, sep = "\t")
+lv0_matrix = summaryBy(list(colnames(lv0)[2:ncol(lv0)], "ID"), data = lv0, FUN = sum)
+colnames(lv0_matrix) = gsub(".sum", "", colnames(lv0_matrix))
+lv0_matrix = lv0_matrix[lv0_matrix$ID != "Unknown", ]
+write.table(lv0_matrix, file = "lv0_matrix.txt", sep = "\t", quote = F, row.names = F)
+
+# kegg l1 abundance 
+lv1_de = read.table("./Level1.list.f", sep = "\t")
+lv1_ab = read.table("./lv1_matrix.txt", header = T, sep = "\t") %>%
+  melt() %>%
+  merge(mp, by.x = "variable", by.y="Sample") %>%
+  merge(lv1_de, by.x="ID", by.y="V1")
+
+lv1p = compare_means(value~From_Adults_or_children, lv1_ab, group.by = "ID")
+
+#Lv1_bar = ggplot(meta_phylum_rank$plot_format, aes(Sample, Abundance, fill=reorder(new_name, -Abundance)))+geom_bar(stat="identity", width=1, position = 'fill')+facet_grid(~From_Adults_or_children, scales="free_x",space="free_x")+theme_bw()+theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())+scale_fill_brewer(palette="Set3")
+
+#ggsave(Lv1_bar, file="Figure_X11_kegg_l1.pdf", width = 6, height = 3)
+
+
+get_phyoseq_data <- function(meta_ab, meta_tax, mp){
+  meta_ab = subset(meta_ab, select = as.character(mp$Sample))
+  meta_ab = meta_ab[which(rowSums(meta_ab)!=0),] # remove OTU not existied in these samples.
+  if (ncol(meta_tax) == 1){
+    meta_tax$Others = rep("Fix_bugs", nrow(meta_tax))
+  }
+  meta_tax = meta_tax[rownames(meta_tax) %in% rownames(meta_ab), ] #remove these OTUs taxon
+  ###### Create a phyloseq input
+  meta_MP = sample_data(raw_mp)
+  meta_OTU = otu_table(as.matrix(meta_ab), taxa_are_rows = T)
+  meta_TAX = tax_table(as.matrix(meta_tax))
+  meta_physeq = phyloseq(meta_OTU, meta_TAX, meta_MP)
+  meta_physeq
+}
+
+##~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ KEGG function PCoA 
+lv0_tax = read.table("lv0_matrix.tax",row.names = 1, header = T, sep = "\t")
+lv0_data = read.table("lv0_matrix.txt", row.names = 1, header = T, sep = "\t")
+
+
+meta_MP = sample_data(raw_mp)
+KEGG_OTU = otu_table(as.matrix(lv0_data), taxa_are_rows = T)
+KEGG_TAX = tax_table(as.matrix(lv0_tax))
+KEGG_physeq = phyloseq(KEGG_OTU, KEGG_TAX, meta_MP)
+
+lv0_data = lv0_matrix %>% as.data.frame() ; rownames(lv0_data) = lv0_data[,1]; lv0_data = lv0_data[, -1] 
+lv0_dist = vegan::vegdist(t(lv0_data)) %>% monoMDS()
+lv0_nmds = lv0_dist$points %>% as.data.frame()
+lv0_nmds$Sample = rownames(lv0_nmds)
+lv0_plot_data = merge(lv0_nmds, mp, by='Sample')
+
+### plot 
+kegg_pcao_pt0 = ggscatter(lv0_plot_data, x = "MDS1", y = "MDS2",
+          color = "From_Adults_or_children", palette = "npg",
+          ellipse = TRUE, ellipse.type="confidence",ellipse.level = 0.95,
+          mean.point = F, star.plot = TRUE, 
+          ggtheme = theme_bw()) 
+setwd('/userdatanode3/data_jinh/virome_dna_rna/02_dna_pipeline/13_plot_v3')
+ggsave(kegg_pcao_pt0, file = 'SF_kegg_pcao_pt0.pdf', width = 7, height = 5, useDingbats=F)
+
+## adonis
+KEGG_dist = phyloseq::distance(meta_physeq, method="bray")
+KEGG_adonis  = get_anosim_group(KEGG_dist, KEGG_physeq, mp$From_Adults_or_children, 'From_Adults_or_children') %>% ldply()
+write.table(KEGG_adonis, file='SF_KEGG_adonis.txt', sep = "\t", quote = F, row.names = F)
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ level2
+lv2_de = read.table("./KEGG_files/KEGG_level2.list", sep = "\t", row.names = 1)
+lv2_ab = read.table("./lv2_matrix.txt", header = T, sep = "\t", row.names = 1) 
+lv2_phypseq = get_phyoseq_data(lv2_ab, lv2_de, mp)
+
+## barplot
+meta_phylum_rank_l2 = get_topn_taxa(lv2_phypseq, "V2", 10)
+
+Lv2_bar = ggplot(meta_phylum_rank_l2$plot_format, aes(Sample, Abundance, fill=reorder(new_name, -Abundance)))+geom_bar(stat="identity", width=1, position = 'fill')+facet_grid(~From_Adults_or_children, scales="free_x",space="free_x")+theme_bw()+theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())+scale_fill_brewer(palette="Set3") + labs(fill='KEGG level2') 
+
+ggsave(Lv2_bar, file="Figure_X11_kegg_l2bar.pdf", width = 8, height = 3)
+
+
+## convert to relative abundance to find a lv2 diff
+lv2_phypseq_t = transform_sample_counts(lv2_phypseq, function(x){x/sum(x)*100} ) %>% microbiome::transform('clr')
+
+###~~ relative abundance
+#lv2_ggpt = psmelt(transform_sample_counts(lv2_phypseq, function(x){x/sum(x)*100} )) 
+lv2_ggpt = psmelt(lv2_phypseq_t)
+## using clr tran for barplot
+
+###!!! save abundance 
+lv2_ab = summaryBy(Abundance ~ V2, data = lv2_ggpt, FUN = mean) %>% arrange(desc(Abundance.mean))
+require(fdrtool)
+lv2_wilcox = get_wilcox_result(physeq = lv2_phypseq_t, label = "From_Adults_or_children", level = "V2")
+lv2_wilcox$qvalue = fdrtool(as.numeric(lv2_wilcox$p.format), statistic="pvalue")$qval
+
+### sig lv2
+human_disease = c('Cancer: overview', 'Not included in regular maps')
+'%!in%' <- function(x,y)!('%in%'(x,y))
+
+lv2_sig_adults = subset(lv2_wilcox, group1 == "Chinese_adults" & group2 == "Pakistani_adults" & qvalue <0.05 & V2 %!in% human_disease)['V2'][,1] %>% as.character()
+
+lv2_sig_children = subset(lv2_wilcox, group1 == "Chinese_children" & group2 == "Pakistani_children" & qvalue <0.05 & V2 %!in% human_disease )['V2'][,1] %>% as.character()
+
+###### adults 
+adults_dt = lv2_ggpt[lv2_ggpt$V2 %in% lv2_sig_adults, ] %>% subset( Adults_or_children == "adults" )
+
+adults_lv2_diff = ggplot(adults_dt, aes(x=reorder(V2, Abundance, mean), y=Abundance, fill=From_Adults_or_children)) + geom_boxplot() + coord_flip() + scale_fill_manual(values = mypal[1:2]) + theme_bw()+theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+##### children
+children_dt = lv2_ggpt[lv2_ggpt$V2 %in% lv2_sig_children, ] %>% subset( Adults_or_children == "children")
+
+children_lv2_diff = ggplot(children_dt, aes(x=reorder(V2, Abundance, mean), y=Abundance, fill=From_Adults_or_children)) + geom_boxplot() + coord_flip() + scale_fill_manual(values = mypal[3:4]) + theme_bw()+theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+## Save kegg level2 boxplot
+l2_diff = plot_grid(adults_lv2_diff ,children_lv2_diff, ncol = 1, align = "v", rel_heights = c(length(lv2_sig_adults), length(lv2_sig_children) )) 
+
+## save plot
+ggsave(adults_lv2_diff, file = "SF_Adults_KEGG_l2_diff.pdf", width = 10, height = 8, useDingbats=F)
+ggsave(l2_diff, file = "SF_KEGG_l2_diff.pdf", width = 8, height = 8, useDingbats=F)
+
+write.table(lv2_wilcox, file = "lv2_wilcox.txt", sep = "\t", quote = F, row.names = F)
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ level3 has been abandoned ...
+lv3_de = read.table("./KEGG_files/KEGG_level3.list.f", sep = "\t", row.names = 1)
+lv3_ab = read.table("./lv3_matrix.txt", header = T, sep = "\t", row.names = 1) 
+lv3_phypseq = get_phyoseq_data(lv3_ab, lv3_de, mp) %>% tax_glom("V2")
+
+
+## barplot
+meta_phylum_rank_l3 = get_topn_taxa(lv3_phypseq, "V2", 10)
+
+Lv3_bar = ggplot(meta_phylum_rank_l3$plot_format, aes(Sample, Abundance, fill=reorder(new_name, -Abundance)))+geom_bar(stat="identity", width=1, position = 'fill')+facet_grid(~From_Adults_or_children, scales="free_x",space="free_x")+theme_bw()+theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())+scale_fill_brewer(palette="Set3") +labs(fill = "KEGG level3")
+
+
+## convert to clr abundance to find a lv2 diff
+lv3_phypseq_t = transform_sample_counts(lv3_phypseq, function(x){x/sum(x)*100} ) %>% microbiome::transform('clr')
+lv3_ggpt = psmelt(lv3_phypseq_t) 
+
+lv3_wilcox = get_wilcox_result(physeq = lv3_phypseq_t, label = "From_Adults_or_children", level = "V2")
+
+
+### sig lv3
+lv3_sig_adults = subset(lv3_wilcox, group1 == "Chinese_adults" & group2 == "Pakistani_adults" & p <0.01)['V2'][,1] %>% as.character()
+lv3_sig_children = subset(lv3_wilcox, group1 == "Chinese_children" & group2 == "Pakistani_children" & p <0.01)['V2'][,1] %>% as.character()
+
+###### adults 
+adults_dt_l3 = lv3_ggpt[lv3_ggpt$V2 %in% lv3_sig_adults, ] %>% subset( Adults_or_children == "adults" )
+
+adults_lv3_diff = ggplot(adults_dt_l3, aes(x=reorder(V2, Abundance, mean), y=Abundance, fill=From_Adults_or_children)) + geom_boxplot() + coord_flip() + scale_fill_manual(values = mypal[1:2]) + theme_bw()+theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+##### children
+children_dt_l3 = lv3_ggpt[lv3_ggpt$V2 %in% lv3_sig_children, ] %>% subset( Adults_or_children == "children")
+
+children_lv3_diff = ggplot(children_dt_l3, aes(x=reorder(V2, Abundance, mean), y=Abundance, fill=From_Adults_or_children)) + geom_boxplot() + coord_flip() + scale_fill_manual(values = mypal[3:4]) + theme_bw()+theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+l3_diff = plot_grid(adults_lv3_diff ,children_lv3_diff, ncol = 1, align = "v", rel_heights = c(length(lv3_sig_adults), length(lv3_sig_children) )) 
+ggsave(l3_diff, file = "l2_diff.pdf", width = 8, height = 97.5, useDingbats=F)
+
+write.table(lv3_wilcox, file = "lv3_wilcox.txt", sep = "\t", quote = F, row.names = F)
+```
+
+# procrustes analysis
+```{r}
+### load RNA_data and DNA_data
+dna_bray = phyloseq::distance(meta_physeq, "bray", type="samples")
+
+rnadata = read.table("Species_abundance.txt", header = T,  sep = "\t")
+rna_bray = vegdist(t(rnadata[, 2:ncol(rnadata)]), method = "bray")
+
+## NMDS
+INA = monoMDS(dna_bray)$point %>% as.data.frame()
+INB = monoMDS(rna_bray)$point %>% as.data.frame()
+
+rownames(INA) = gsub("D", "", rownames(INA))
+rownames(INB) = gsub("R", "", rownames(INB))
+
+INA = INA[order(rownames(INA)), ] ; 
+INB = INB[order(rownames(INB)), ] ; 
+## procrustes vegan
+procrustes.results <- ade4::procuste(INA, INB)
+A = procrustes.results$tabX %>% as.data.frame() ; A$Sample = rownames(A)
+B = procrustes.results$tabY %>% as.data.frame() ; B$Sample = rownames(B)
+INA_sp = INA;  INA_sp$Sample = rownames(INA)
+INB_sp = INB;  INB_sp$Sample = rownames(INB)
+
+plot_pro = rbind(INA_sp,INB_sp)
+plot_pro$method = rep(c("DNA", "RNA"), each = 60)
+
+new_mp = mp; 
+new_mp$Sample = gsub("D", "", new_mp$Sample)
+plot_pro = merge(plot_pro, new_mp, by = "Sample")
+
+
+
+##### p value 
+pro_test = protest(X = INA, Y = INB, scores = "sites", permutations = 999)
+# ade4$procuste.rtest(INA, INB, permutations = 999) # Note Observation in ade4 was equal to procuste corr
+
+##### plot 
+plot_pro_ggpt = ggplot(plot_pro, aes(MDS1, MDS2, color = From_Adults_or_children, shape = method)) + 
+  geom_point(size = 3) +
+  geom_line(aes(group = Sample, color = From_Adults_or_children), alpha=0.5) + 
+  ggtitle("Procruste rotation comparing MDS from two different viromes\nProcustes correlation = 0.37, p=0.001") + scale_color_npg() + theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+ggsave(plot_pro_ggpt, file = "procuste_dna_rna.pdf", width = 7, height = 5, useDingbats = F)
+```
+
+# supp 
+```{r}
+#### richness 
+rich  = estimate_richness(meta_physeq)
+rich$Sample = rownames(rich)
+rich_mp = merge(rich, mp, by = "Sample") %>% melt
+
+alpha = compare_means(value~From_Adults_or_children, rich_mp, group.by = "variable")
+write.table(alpha, file = "alpha_pvalue.txt", sep = "\t", quote = F, row.names = F)
+
+mapping = data.frame(sample_data(meta_physeq))
+dist_grp = dist_groups(dna_bray, mapping$From_Adults_or_children )
+
+dist_pvalue = compare_means(Distance~Label, dist_grp)
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ RNA virome adonis
+rna_ab = read.table("./RNA_abundance", sep = "\t", row.names = 1, header = T)
+rna_tax = read.table('./RNA_virus.tax', sep = "\t", row.names = 1, header = T)
+RNA_MP = read.table('./RNA_mp', sep = "\t", row.names = 1, header = T)
+
+RNA_MP = sample_data(RNA_MP)
+RNA_OTU = otu_table(as.matrix(rna_ab), taxa_are_rows = T)
+RNA_TAX = tax_table(as.matrix(rna_tax))
+RNA_physeq = phyloseq(RNA_OTU, RNA_TAX, RNA_MP)
+
+RNA_dist = phyloseq::distance(RNA_physeq, method="bray")
+RNA_adonis = get_anosim_group(RNA_dist, RNA_physeq, RNA_MP$From_Adult_or_child, "From_Adult_or_child") %>% ldply () %>% subset(Df == 1)
+
+write.table(RNA_adonis, file = 'RNA_adonis.txt', quote = F, sep = "\t", row.names = F)
+```
+
+## S10 sup
+```{r}
+adonis_sum = read.table('./DNA_function_DNA_RNA_Microbiome_Adonis', header = T, sep = "\t")
+adonis_barplot_v1 = ggplot(adonis_sum, aes(id, R2, fill='black')) + geom_bar(stat="identity", position="dodge") + facet_wrap(.~Grp, nrow=1) + coord_flip()
+
+adonis_barplot_v2 = ggplot(adonis_sum, aes(reorder(id, R2, mean), R2, fill= reorder(Grp, R2, mean) )) + geom_bar(stat="identity", position="dodge")  + coord_flip() + scale_fill_aaas(alpha = 0.8) + theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+ggsave(adonis_barplot_v2, file = 'adonis_barplot_v2.pdf', width = 10, height = 5)
+
+```
+
+# S11 CAZY 
+```{r}
+cazy = read.table('./CAZY_virus_family.new', sep = "\t", header = F)
+cazy$count = rep(1, nrow(cazy))
+### pie plot
+library(plotly)
+cazy_freq = table(cazy$V6) %>% as.data.frame()
+
+#pdf(file = "S11_cazy_pie.pdf")
+cazy_pie = plot_ly(cazy_freq, labels= ~Var1,values=~Freq, type = 'pie', textposition = 'outside', textinfo = 'label+percent')
+
+saveWidget(as.widget(cazy_pie), "S11_cazy.html")
+webshot("S11_cazy.html", file = "S11_cazy.pdf",
+        cliprect = "viewport")
+
+### Family cazy count
+cazy_sum = doBy::summaryBy(list('count', c('V4','V6', 'V7')), data = cazy, FUN=sum)
+
+####~~~save table 
+write.table(cazy_sum, file = "S11_cazy_sum.txt", quote = F, sep="\t")
+write.table(cazy_freq, file = "S11_cazy_pie.txt", quote = F, sep="\t")
+
+p1 = ggplot(subset(cazy_sum,  count.sum>2), aes(x=reorder(V4, -count.sum, sum), y=count.sum, fill=V6)) + geom_bar(stat="identity", position = 'stack') + scale_fill_aaas(alpha = 0.8) + theme_bw()+ theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) + facet_wrap(.~V7, scales = 'free')
+
+gt = ggplotGrob(p1)
+N <- subset(cazy_sum,  count.sum>2) %>% group_by(V7) %>% 
+    summarise(count = length(unique(V4))) %>% 
+    `[[`(2)
+
+panelI <- gt$layout$l[grepl("panel", gt$layout$name)]
+
+# Replace the default panel widths with relative heights.
+gt$widths[panelI] <- unit(N, "null")
+
+# Add extra width between panels (assuming two panels)
+gt$widths[panelI[1] + 1] = unit(1, "cm")
+
+## Draw gt
+grid.newpage()
+grid.draw(gt)
+```
+
+# beta diff dist 
+```{r}
+raw_mp3 = read.table("./mapping_v3.txt", header=T, sep="\t",row.names = 1)
+#row.names(raw_mp3) = gsub('D', '', row.names(raw_mp3))
+mp3 = raw_mp3 
+mp3$Sample  =rownames(mp3)
+
+
+###### Create a phyloseq input
+meta_MP3 = sample_data(raw_mp3)
+
+meta_physeq3 = phyloseq(meta_OTU, meta_TAX, meta_MP3)
+phy_dist = phyloseq::distance(meta_physeq3, method="bray")
+meta_physeq_clr = microbiome::transform(meta_physeq3, 'clr')
+phy_dist_aitc = phyloseq::distance(meta_physeq_clr, method="euclidean")
+
+
+###### Aitchison distance
+## ~ For PA
+mmp =  sample_data(raw_mp3) %>% as.data.frame()
+phy_dist_aitc_data_N1 = dist_groups(phy_dist_aitc, mmp$N1 )
+phy_dist_aitc_data_N2 = dist_groups(phy_dist_aitc, mmp$N2 )
+subgroup = c('Within Chinese_adult', 'Within Chinese_children', 'Within Pakistani_adult', 'Within Pakistani_children', 'Between Chinese_children and Pakistani_adults', 'Between Chinese_adults and Chinese_children', 'Between Pakistani_adults and Pakistani_children', 'Between Chinese_adults and Pakistani_children')
+
+subgroup = c('Within Chinese_adult', 'Within Chinese_children', 'Within Pakistani_adult', 'Within Pakistani_children', 'Between Chinese_children and Pakistani_adults', 'Between Chinese_adults and Chinese_children', 'Between Pakistani_adults and Pakistani_children', 'Between Chinese_adults and Pakistani_children')
+
+#phy_dist_aitc_data_sub = subset(phy_dist_aitc_data_N1, Label %in% subgroup)
+aitc_data_N1 = ggplot(data = phy_dist_aitc_data_N1, aes(x=Label, y=Distance)) + geom_boxplot() + coord_flip()
+aitc_data_N2 = ggplot(data = phy_dist_aitc_data_N2, aes(x=Label, y=Distance)) + geom_boxplot() + coord_flip()
+
+## combine_N1+ N2
+combine_data = rbind(phy_dist_aitc_data_N1, phy_dist_aitc_data_N2)
+subgroup = c('Within Chinese_adult', 'Within Chinese_children', 'Within Pakistani_adult', 'Within Pakistani_children', 'Between China_all and Pakistani_children', 'Between Pakistani_adults and Pakistani_children', 'Between Chinese_children and Pakistani_all', 'Between Chinese_adults and Chinese_children')
+
+DNA_ca_dist_plot = ggplot(data = subset(combine_data, Label %in% subgroup), aes(x=reorder(Label, Distance, median), y=Distance)) + geom_boxplot() + coord_flip() + theme_bw()+theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+DNA_ca_dist = compare_means(Distance~Label, subset(combine_data, Label %in% subgroup)) %>% as.data.frame()
+
+ggsave(DNA_ca_dist_plot, file = 'DNA_ca_dist_plot.pdf', width = 5, height = 3)
+write.table(DNA_ca_dist, file = 'DNA_ca_dist_pvalue.txt', sep = '\t', row.names = F, quote= F)
+```
+
+### children adults 
+```{r}
+# adonis
+phy_dist = phyloseq::distance(meta_physeq3, method="bray")
+mmp =  sample_data(raw_mp3) %>% as.data.frame()
+
+
+anosim_bray_N1 = get_anosim_group(phy_dist, meta_physeq3, mmp$N1, "N1")
+adonis_out_N1 = ldply(anosim_bray_N1, function(x){r = x$R2[1];  p = x$`Pr(>F)`[1]; cbind(r, p)} )
+#write.table(adonis_out, file='S2_adonis_out.txt', sep = "\t", row.names = F, quote = F)
+
+anosim_bray_N2 = get_anosim_group(phy_dist, meta_physeq3, mmp$N2, "N2")
+adonis_out_N2 = ldply(anosim_bray_N2, function(x){r = x$R2[1];  p = x$`Pr(>F)`[1]; cbind(r, p)} )
+
+combine_adonis_N1_N2 = rbind(adonis_out_N1, adonis_out_N2)
+combine_adonis_N1_N2$name1 = ldply(strsplit(combine_adonis_N1_N2$.id, "_vs_") )[,1] ; combine_adonis_N1_N2$name2 = ldply(strsplit(combine_adonis_N1_N2$.id, "_vs_") )[,2]
+
+## barplot
+
+#combine_adonis_N1_N2$.id = factor(combine_adonis_N1_N2, levels = c("Between Pakistani_adults and Pakistani_children", "Between China_all and Pakistani_children" , "Between Chinese_children and Pakistani_all", "Within Pakistani_children", "Between Chinese_adults and Chinese_children", "Within Chinese_children"  ) )
+adonis_barplot = ggplot(combine_adonis_N1_N2, aes(reorder(.id, r), r, fill='black')) + geom_bar(stat="identity", position="dodge") + coord_flip()
+
+DNA_adonis = DNA_ca_dist_plot + adonis_barplot
+ggsave(DNA_adonis, file = 'DNA_adonis.pdf', width = 10, height = 5)
+```
